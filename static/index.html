@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Portfolio Monte Carlo Simulator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/styles.css" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <div class="container mt-4">
+        <h1 class="text-center mb-4">Stock Portfolio Monte Carlo Simulator</h1>
+        
+        <!-- Configuration Section -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title">Portfolio Configuration</h5>
+                        <form id="stockForm">
+                            <div id="portfolioGroups">
+                                <div class="portfolio-group mb-4">
+                                    <div class="mb-3">
+                                        <label class="form-label">Portfolio Name</label>
+                                        <input type="text" class="form-control portfolio-name" placeholder="e.g., Tech Stocks">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Stock Tickers (comma-separated)</label>
+                                        <input type="text" class="form-control portfolio-tickers" placeholder="AAPL,MSFT,GOOGL">
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <button type="button" class="btn btn-outline-primary" id="addPortfolioBtn">
+                                    Add Another Portfolio Group
+                                </button>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="startYear" class="form-label">Start Year</label>
+                                <input type="number" class="form-control" id="startYear" value="2000" min="1980" max="2024">
+                            </div>
+                            <div class="mb-3">
+                                <label for="numSimulations" class="form-label">Number of Simulations</label>
+                                <input type="number" class="form-control" id="numSimulations" value="1000" min="100" max="10000">
+                            </div>
+                            <div class="mb-3">
+                                <label for="timeHorizon" class="form-label">Time Horizon (months)</label>
+                                <input type="number" class="form-control" id="timeHorizon" value="60" min="1" max="120">
+                                <small class="form-text text-muted">All calculations are performed using monthly data</small>
+                            </div>
+                            <button type="submit" class="btn btn-primary">Run Analysis</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Single Portfolio Statistics -->
+            <div class="col-md-6 single-portfolio-section">
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title">Portfolio Statistics</h5>
+                        <div id="statistics" class="statistics-container">
+                            <p class="text-muted">Run analysis to see statistics</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Single Portfolio Historical Performance -->
+        <div class="row single-portfolio-section">
+            <div class="col-12">
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title">Historical Portfolio Performance</h5>
+                        <div id="portfolioDescription" class="mb-3">
+                            <p class="text-muted">Run analysis to see historical performance</p>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6 class="text-primary">Cumulative Performance</h6>
+                                <div id="historicalValuePlot" class="plot-container"></div>
+                            </div>
+                            <div class="col-md-6">
+                                <h6 class="text-primary">Return Distribution</h6>
+                                <div id="returnsHistogramPlot" class="plot-container"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Single Portfolio Dividend Analysis -->
+        <div class="row single-portfolio-section">
+            <div class="col-12">
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title">Dividend Analysis</h5>
+                        <div id="dividendDescription" class="mb-3">
+                            <p class="text-muted">Run analysis to see dividend projections</p>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6 class="text-primary">Portfolio Dividend Metrics</h6>
+                                <div id="dividendStats" class="statistics-section"></div>
+                            </div>
+                            <div class="col-md-6">
+                                <h6 class="text-primary">Individual Stock Dividends</h6>
+                                <div id="individualDividends" class="statistics-section"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Single Portfolio Monte Carlo -->
+        <div class="row single-portfolio-section">
+            <div class="col-12">
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title">Monte Carlo Simulation Results</h5>
+                        <div id="simulationPlot" class="plot-container"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Single Portfolio Convergence -->
+        <div class="row single-portfolio-section">
+            <div class="col-12">
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title">Convergence Analysis</h5>
+                        <div id="convergencePlot" class="plot-container"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Portfolio Comparison Section -->
+        <div class="row comparison-section" style="display: none;">
+            <div class="col-12">
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title">Portfolio Comparison</h5>
+                        <div id="portfolioComparison" class="statistics-container">
+                            <p class="text-muted">Run analysis to see portfolio comparisons</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Monte Carlo Comparison Section -->
+        <div class="row comparison-section" style="display: none;">
+            <div class="col-12">
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title">Monte Carlo Simulation Comparison</h5>
+                        <div id="simulationComparison" class="plot-container"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html> 
