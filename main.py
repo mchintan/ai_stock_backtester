@@ -3,10 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
-from typing import List, Dict
+from pydantic import BaseModel, Field
+from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 from pathlib import Path
+from functools import lru_cache
+import concurrent.futures
+import asyncio
+from enum import Enum
+from scipy.optimize import minimize
 
 import yfinance as yf
 import pandas as pd
@@ -41,76 +46,113 @@ class PortfolioGroup(BaseModel):
     name: str
     tickers: List[str]
 
+# Add new models for optimization
+class OptimizationObjective(str, Enum):
+    SHARPE_RATIO = "sharpe_ratio"
+    MIN_VOLATILITY = "min_volatility"
+    MAX_RETURN = "max_return"
+    MAX_SORTINO = "max_sortino"
+    RISK_PARITY = "risk_parity"  # Add risk parity option
+
 class StockRequest(BaseModel):
     portfolio_groups: List[PortfolioGroup]
     num_simulations: int = 1000
-    time_horizon: int = 60  # Default to 5 years (60 months)
-    start_year: int = 2000  # Default to start from year 2000
+    time_horizon: int = 60
+    start_year: int = 2010
+    optimization_objective: OptimizationObjective = OptimizationObjective.SHARPE_RATIO
+    min_weight: float = Field(0.0, ge=0.0, le=1.0)
+    max_weight: float = Field(1.0, ge=0.0, le=1.0)
 
-def fetch_historical_data(tickers: List[str], start_year: int = 2000) -> Dict:
-    """Fetch historical data for given tickers from specified start year."""
+# Add caching for historical data fetching
+@lru_cache(maxsize=100)
+def fetch_cached_stock_data(ticker: str, start_date: datetime, end_date: datetime):
+    stock = yf.Ticker(ticker)
+    return stock.history(start=start_date, end=end_date)
+
+# Modify fetch_historical_data to use parallel processing
+async def fetch_historical_data(tickers: List[str], start_year: int = 2000) -> Dict:
     end_date = datetime.now()
     start_date = datetime(start_year, 1, 1)
     
     price_dfs = {}
     dividend_data = {}
     
-    for ticker in tickers:
-        try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(start=start_date, end=end_date)
-            if not hist.empty:
-                # Get the close prices and resample to month-end
-                close_prices = hist['Close'].resample('ME').last()
-                price_dfs[ticker] = close_prices
-                
-                # Get dividend data
-                dividends = hist['Dividends'].resample('ME').sum()  # Monthly dividend sums
-                if not dividends.empty and dividends.sum() > 0:
-                    annual_dividends = dividends.resample('YE').sum()  # Changed from 'Y' to 'YE'
-                    latest_price = close_prices.iloc[-1]
-                    latest_annual_div = dividends.rolling(12).sum().iloc[-1]  # Rolling 12-month dividend
+    # Use ThreadPoolExecutor for parallel data fetching
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(tickers), 10)) as executor:
+        futures = {executor.submit(fetch_cached_stock_data, ticker, start_date, end_date): ticker for ticker in tickers}
+        for future in concurrent.futures.as_completed(futures):
+            ticker = futures[future]
+            try:
+                hist = future.result()
+                if not hist.empty:
+                    # Get the close prices and resample to month-end
+                    close_prices = hist['Close'].resample('ME').last()
+                    price_dfs[ticker] = close_prices
                     
-                    # Calculate dividend growth rate with safety checks
-                    if len(annual_dividends) > 1 and annual_dividends.iloc[0] > 0:
-                        growth_rate = ((annual_dividends.iloc[-1] / annual_dividends.iloc[0]) ** (1 / max(1, len(annual_dividends)-1))) - 1
-                        # Ensure growth rate is within reasonable bounds
-                        growth_rate = min(max(growth_rate, -0.5), 0.5)  # Cap between -50% and +50%
+                    # Get dividend data
+                    dividends = hist['Dividends'].resample('ME').sum()  # Monthly dividend sums
+                    if not dividends.empty and dividends.sum() > 0:
+                        annual_dividends = dividends.resample('YE').sum()  # Changed from 'Y' to 'YE'
+                        latest_price = close_prices.iloc[-1]
+                        latest_annual_div = dividends.rolling(12).sum().iloc[-1]  # Rolling 12-month dividend
+                        
+                        # Calculate dividend growth rate with safety checks
+                        if len(annual_dividends) > 1 and annual_dividends.iloc[0] > 0:
+                            growth_rate = ((annual_dividends.iloc[-1] / annual_dividends.iloc[0]) ** (1 / max(1, len(annual_dividends)-1))) - 1
+                            # Ensure growth rate is within reasonable bounds
+                            growth_rate = min(max(growth_rate, -0.5), 0.5)  # Cap between -50% and +50%
+                        else:
+                            growth_rate = 0.0
+                        
+                        dividend_data[ticker] = {
+                            'dividend_yield': float(latest_annual_div / latest_price) if latest_price > 0 else 0.0,
+                            'dividend_growth': float(growth_rate),
+                            'dividend_history': [float(d) for d in annual_dividends.values],
+                            'dividend_years': [int(d.year) for d in annual_dividends.index],
+                            'monthly_dividends': [float(d) for d in dividends.values],
+                            'dividend_months': [d.strftime("%Y-%m-%d") for d in dividends.index]
+                        }
                     else:
-                        growth_rate = 0.0
+                        dividend_data[ticker] = {
+                            'dividend_yield': 0.0,
+                            'dividend_growth': 0.0,
+                            'dividend_history': [],
+                            'dividend_years': [],
+                            'monthly_dividends': [0.0] * len(close_prices),
+                            'dividend_months': [d.strftime("%Y-%m-%d") for d in close_prices.index]
+                        }
                     
-                    dividend_data[ticker] = {
-                        'dividend_yield': float(latest_annual_div / latest_price) if latest_price > 0 else 0.0,
-                        'dividend_growth': float(growth_rate),
-                        'dividend_history': [float(d) for d in annual_dividends.values],
-                        'dividend_years': [int(d.year) for d in annual_dividends.index],
-                        'monthly_dividends': [float(d) for d in dividends.values],
-                        'dividend_months': [d.strftime("%Y-%m-%d") for d in dividends.index]
-                    }
-                else:
-                    dividend_data[ticker] = {
-                        'dividend_yield': 0.0,
-                        'dividend_growth': 0.0,
-                        'dividend_history': [],
-                        'dividend_years': [],
-                        'monthly_dividends': [0.0] * len(close_prices),
-                        'dividend_months': [d.strftime("%Y-%m-%d") for d in close_prices.index]
-                    }
-                    
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Error fetching data for {ticker}: {str(e)}")
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Error fetching data for {ticker}: {str(e)}")
     
     # Calculate portfolio-level dividend metrics with safety checks
     if dividend_data and price_dfs:
         total_portfolio_value = sum(price_dfs[ticker].iloc[-1] for ticker in price_dfs.keys())
         if total_portfolio_value > 0:
             portfolio_dividend_data = {
-                'portfolio_yield': min(sum(dividend_data[ticker]['dividend_yield'] * price_dfs[ticker].iloc[-1] / total_portfolio_value 
-                                     for ticker in dividend_data.keys()), 1.0),  # Cap at 100%
-                'weighted_growth': min(max(sum(dividend_data[ticker]['dividend_growth'] * price_dfs[ticker].iloc[-1] / total_portfolio_value 
-                                     for ticker in dividend_data.keys()), -0.5), 0.5),  # Cap between -50% and +50%
-                'annual_income': float(sum(dividend_data[ticker]['dividend_yield'] * price_dfs[ticker].iloc[-1] 
-                                   for ticker in dividend_data.keys())),
+                'portfolio_yield': min(
+                    sum(
+                        dividend_data[ticker]['dividend_yield'] * price_dfs[ticker].iloc[-1] / total_portfolio_value 
+                        for ticker in dividend_data.keys()
+                    ), 
+                    1.0
+                ),
+                'weighted_growth': min(
+                    max(
+                        sum(
+                            dividend_data[ticker]['dividend_growth'] * price_dfs[ticker].iloc[-1] / total_portfolio_value 
+                            for ticker in dividend_data.keys()
+                        ), 
+                        -0.5
+                    ), 
+                    0.5
+                ),
+                'annual_income': float(
+                    sum(
+                        dividend_data[ticker]['dividend_yield'] * price_dfs[ticker].iloc[-1] 
+                        for ticker in dividend_data.keys()
+                    )
+                ),
                 'individual_dividends': dividend_data
             }
         else:
@@ -235,6 +277,183 @@ def analyze_convergence(df: pd.DataFrame, max_simulations: int, time_horizon: in
     
     return {'convergence': convergence_results}
 
+def calculate_portfolio_metrics(weights: np.ndarray, returns: pd.DataFrame) -> Dict:
+    """Calculate various portfolio metrics."""
+    annual_returns = returns.mean() * 12
+    cov_matrix = returns.cov() * 12
+    
+    portfolio_return = np.sum(annual_returns * weights)
+    portfolio_risk = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+    
+    # Calculate Sortino ratio (using downside deviation)
+    risk_free_rate = 0.02
+    
+    # Calculate portfolio returns for downside deviation
+    portfolio_returns = returns.dot(weights)
+    negative_returns = portfolio_returns[portfolio_returns < 0]
+    downside_deviation = np.sqrt(np.sum(negative_returns**2) / len(returns)) * np.sqrt(12)
+    
+    return {
+        'return': portfolio_return,
+        'risk': portfolio_risk,
+        'sharpe_ratio': (portfolio_return - risk_free_rate) / portfolio_risk if portfolio_risk > 0 else 0,
+        'sortino_ratio': (portfolio_return - risk_free_rate) / downside_deviation if downside_deviation > 0 else 0
+    }
+
+def calculate_risk_contribution(weights: np.ndarray, cov_matrix: np.ndarray) -> np.ndarray:
+    """Calculate risk contribution of each asset."""
+    portfolio_risk = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+    marginal_risk_contribution = np.dot(cov_matrix, weights)
+    risk_contribution = np.multiply(marginal_risk_contribution, weights) / portfolio_risk
+    return risk_contribution
+
+def risk_parity_objective(weights: np.ndarray, cov_matrix: np.ndarray) -> float:
+    """Objective function for risk parity optimization."""
+    risk_contrib = calculate_risk_contribution(weights, cov_matrix)
+    target_risk = 1.0 / len(weights)  # Equal risk contribution
+    return np.sum((risk_contrib - target_risk) ** 2)
+
+def calculate_historical_rebalance(
+    df: pd.DataFrame,
+    weights: np.ndarray,
+    rebalance_frequency: str = 'M',  # 'M' for monthly, 'Q' for quarterly, 'Y' for yearly
+    transaction_cost: float = 0.001  # 0.1% transaction cost
+) -> Dict:
+    """Calculate historical performance with periodic rebalancing."""
+    returns = df.pct_change().dropna()
+    
+    # Initialize portfolio
+    portfolio_value = 1.0
+    current_weights = weights.copy()
+    portfolio_values = []
+    turnover_history = []
+    rebalance_dates = []
+    
+    # Resample dates for rebalancing
+    rebalance_points = returns.resample(rebalance_frequency).last().index
+    
+    for date in returns.index:
+        # Apply daily returns
+        daily_return = np.sum(returns.loc[date] * current_weights)
+        portfolio_value *= (1 + daily_return)
+        
+        # Update weights due to price changes
+        current_weights *= (1 + returns.loc[date])
+        current_weights /= current_weights.sum()
+        
+        portfolio_values.append(portfolio_value)
+        
+        # Rebalance if needed
+        if date in rebalance_points:
+            old_weights = current_weights.copy()
+            current_weights = weights.copy()
+            
+            # Calculate turnover
+            turnover = np.sum(np.abs(current_weights - old_weights))
+            transaction_cost_impact = turnover * transaction_cost
+            
+            # Apply transaction costs
+            portfolio_value *= (1 - transaction_cost_impact)
+            
+            turnover_history.append({
+                'date': date.strftime('%Y-%m-%d'),
+                'turnover': float(turnover),
+                'cost': float(transaction_cost_impact)
+            })
+            rebalance_dates.append(date.strftime('%Y-%m-%d'))
+    
+    return {
+        'portfolio_values': portfolio_values,
+        'dates': [d.strftime('%Y-%m-%d') for d in returns.index],
+        'turnover_history': turnover_history,
+        'rebalance_dates': rebalance_dates,
+        'final_value': float(portfolio_value),
+        'total_turnover': float(np.sum([t['turnover'] for t in turnover_history])),
+        'total_cost': float(np.sum([t['cost'] for t in turnover_history]))
+    }
+
+def find_optimal_portfolio(
+    df: pd.DataFrame,
+    objective: OptimizationObjective,
+    min_weight: float = 0.0,
+    max_weight: float = 1.0,
+    n_portfolios: int = 10000
+) -> Dict:
+    """Find optimal portfolio weights using various optimization methods."""
+    returns = df.pct_change().dropna()
+    n_assets = len(df.columns)
+    cov_matrix = returns.cov() * 12
+    annual_returns = returns.mean() * 12
+    
+    if objective == OptimizationObjective.RISK_PARITY:
+        # Risk Parity Optimization (existing code)
+        constraints = (
+            {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},  # Weights sum to 1
+        )
+        bounds = tuple((min_weight, max_weight) for _ in range(n_assets))
+        
+        result = minimize(
+            risk_parity_objective,
+            np.array([1/n_assets] * n_assets),
+            args=(cov_matrix,),
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints
+        )
+        
+        optimal_weights = result.x
+    else:
+        # Generate random portfolios for other optimization objectives
+        weights = np.random.uniform(min_weight, max_weight, (n_portfolios, n_assets))
+        weights = weights / weights.sum(axis=1)[:, np.newaxis]  # Normalize weights
+        
+        # Calculate portfolio metrics for each random portfolio
+        portfolio_metrics = []
+        for w in weights:
+            metrics = calculate_portfolio_metrics(w, returns)
+            portfolio_metrics.append({
+                'weights': w,
+                'return': metrics['return'],
+                'risk': metrics['risk'],
+                'sharpe_ratio': metrics['sharpe_ratio'],
+                'sortino_ratio': metrics['sortino_ratio']
+            })
+        
+        # Find optimal portfolio based on objective
+        if objective == OptimizationObjective.SHARPE_RATIO:
+            optimal_idx = max(range(len(portfolio_metrics)), 
+                            key=lambda i: portfolio_metrics[i]['sharpe_ratio'])
+        elif objective == OptimizationObjective.MIN_VOLATILITY:
+            optimal_idx = min(range(len(portfolio_metrics)), 
+                            key=lambda i: portfolio_metrics[i]['risk'])
+        elif objective == OptimizationObjective.MAX_RETURN:
+            optimal_idx = max(range(len(portfolio_metrics)), 
+                            key=lambda i: portfolio_metrics[i]['return'])
+        elif objective == OptimizationObjective.MAX_SORTINO:
+            optimal_idx = max(range(len(portfolio_metrics)), 
+                            key=lambda i: portfolio_metrics[i]['sortino_ratio'])
+        
+        optimal_weights = portfolio_metrics[optimal_idx]['weights']
+    
+    # Calculate final metrics for optimal portfolio
+    metrics = calculate_portfolio_metrics(optimal_weights, returns)
+    
+    # Calculate risk contributions if needed
+    risk_contrib = calculate_risk_contribution(optimal_weights, cov_matrix)
+    
+    return {
+        'optimal_weights': [float(w) for w in optimal_weights],
+        'tickers': list(df.columns),
+        'metrics': {
+            'expected_annual_return': float(metrics['return']),
+            'annual_volatility': float(metrics['risk']),
+            'sharpe_ratio': float(metrics['sharpe_ratio']),
+            'sortino_ratio': float(metrics['sortino_ratio']),
+            'risk_contributions': [float(r) for r in risk_contrib]
+        },
+        'rebalance_analysis': calculate_historical_rebalance(df, optimal_weights)
+    }
+
 @app.post("/api/analyze")
 async def analyze_stocks(request: StockRequest):
     """Main endpoint for stock analysis and simulation."""
@@ -242,7 +461,7 @@ async def analyze_stocks(request: StockRequest):
     
     for portfolio in request.portfolio_groups:
         # Fetch historical data
-        data = fetch_historical_data(portfolio.tickers, request.start_year)
+        data = await fetch_historical_data(portfolio.tickers, request.start_year)
         df = data['prices']
         dividend_data = data['dividends']
         
@@ -255,9 +474,17 @@ async def analyze_stocks(request: StockRequest):
         # Analyze convergence
         convergence_results = analyze_convergence(df, request.num_simulations, request.time_horizon)
         
+        # Find optimal portfolio
+        optimization_results = find_optimal_portfolio(
+            df,
+            request.optimization_objective,
+            request.min_weight,
+            request.max_weight
+        )
+        
         # Project future dividend income
-        initial_portfolio_value = 1.0  # Starting with $1
-        projected_value = simulation_results['percentiles']['50th'][-1]  # Median projected value
+        initial_portfolio_value = 1.0
+        projected_value = simulation_results['percentiles']['50th'][-1]
         projected_annual_income = dividend_data['portfolio_yield'] * projected_value
         projected_income_growth = (1 + dividend_data['weighted_growth']) ** request.time_horizon
         final_projected_income = projected_annual_income * projected_income_growth
@@ -277,7 +504,7 @@ async def analyze_stocks(request: StockRequest):
             "frequency": "monthly",
             "number_of_months": len(df),
             "tickers_analyzed": list(df.columns),
-            "portfolio_description": f"Equal-weighted portfolio of {len(df.columns)} stocks, rebalanced monthly"
+            "portfolio_description": f"Optimized portfolio of {len(df.columns)} stocks"
         }
         
         results[portfolio.name] = {
@@ -285,7 +512,8 @@ async def analyze_stocks(request: StockRequest):
             "statistics": stats,
             "simulation_results": simulation_results,
             "convergence_analysis": convergence_results,
-            "dividend_analysis": dividend_projections
+            "dividend_analysis": dividend_projections,
+            "optimization_results": optimization_results
         }
     
     return results

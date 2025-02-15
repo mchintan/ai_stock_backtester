@@ -15,7 +15,7 @@
         <!-- Configuration Section -->
         <div class="row">
             <div class="col-md-6">
-                <div class="card mb-4">
+                <div class="card mb-4 first-row-card">
                     <div class="card-body">
                         <h5 class="card-title">Portfolio Configuration</h5>
                         <form id="stockForm">
@@ -36,6 +36,27 @@
                                 <button type="button" class="btn btn-outline-primary" id="addPortfolioBtn">
                                     Add Another Portfolio Group
                                 </button>
+                            </div>
+                            
+                            <div class="row mb-3">
+                                <div class="col-md-6">
+                                    <label for="optimizationObjective" class="form-label">Optimization Objective</label>
+                                    <select class="form-control" id="optimizationObjective">
+                                        <option value="sharpe_ratio">Maximize Sharpe Ratio</option>
+                                        <option value="min_volatility">Minimize Volatility</option>
+                                        <option value="max_return">Maximize Return</option>
+                                        <option value="max_sortino">Maximize Sortino Ratio</option>
+                                        <option value="risk_parity">Risk Parity</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="minWeight" class="form-label">Min Weight (%)</label>
+                                    <input type="number" class="form-control" id="minWeight" value="0" min="0" max="100">
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="maxWeight" class="form-label">Max Weight (%)</label>
+                                    <input type="number" class="form-control" id="maxWeight" value="100" min="0" max="100">
+                                </div>
                             </div>
                             
                             <div class="mb-3">
@@ -59,7 +80,7 @@
             
             <!-- Single Portfolio Statistics -->
             <div class="col-md-6 single-portfolio-section">
-                <div class="card mb-4">
+                <div class="card mb-4 first-row-card">
                     <div class="card-body">
                         <h5 class="card-title">Portfolio Statistics</h5>
                         <div id="statistics" class="statistics-container">
@@ -137,6 +158,27 @@
                     <div class="card-body">
                         <h5 class="card-title">Convergence Analysis</h5>
                         <div id="convergencePlot" class="plot-container"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Single Portfolio Rebalancing -->
+        <div class="row single-portfolio-section">
+            <div class="col-12">
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title">Rebalancing Analysis</h5>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6 class="text-primary">Historical Performance with Rebalancing</h6>
+                                <div id="rebalancePlot" class="plot-container"></div>
+                            </div>
+                            <div class="col-md-6">
+                                <h6 class="text-primary">Rebalancing Statistics</h6>
+                                <div id="rebalanceStats" class="statistics-section"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

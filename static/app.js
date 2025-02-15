@@ -41,9 +41,10 @@ document.getElementById('stockForm').addEventListener('submit', async (e) => {
         return;
     }
     
-    const numSimulations = parseInt(document.getElementById('numSimulations').value);
-    const timeHorizon = parseInt(document.getElementById('timeHorizon').value);
-    const startYear = parseInt(document.getElementById('startYear').value);
+    // Get optimization parameters
+    const optimizationObjective = document.getElementById('optimizationObjective').value;
+    const minWeight = parseFloat(document.getElementById('minWeight').value) / 100;
+    const maxWeight = parseFloat(document.getElementById('maxWeight').value) / 100;
     
     try {
         const response = await fetch('/api/analyze', {
@@ -53,9 +54,12 @@ document.getElementById('stockForm').addEventListener('submit', async (e) => {
             },
             body: JSON.stringify({
                 portfolio_groups: portfolioGroups,
-                num_simulations: numSimulations,
-                time_horizon: timeHorizon,
-                start_year: startYear
+                num_simulations: parseInt(document.getElementById('numSimulations').value),
+                time_horizon: parseInt(document.getElementById('timeHorizon').value),
+                start_year: parseInt(document.getElementById('startYear').value),
+                optimization_objective: optimizationObjective,
+                min_weight: minWeight,
+                max_weight: maxWeight
             }),
         });
         
@@ -111,6 +115,11 @@ function displayResults(data) {
         displayDividendAnalysis(portfolioData.dividend_analysis, portfolioData.simulation_results, 'dividendStats');
         displaySimulationPlot(portfolioData.simulation_results);
         displayConvergencePlot(portfolioData.convergence_analysis);
+        
+        // Display optimization results
+        if (portfolioData.optimization_results) {
+            displayOptimizationResults(portfolioData.optimization_results);
+        }
     }
 }
 
@@ -599,4 +608,167 @@ function displayDividendAnalysis(dividendData, simulationResults, containerId) {
         </div>
     `;
     individualContainer.innerHTML = individualHtml;
+}
+
+function displayOptimizationResults(optimization) {
+    // Add pie chart for optimal weights
+    const pieTrace = {
+        values: optimization.optimal_weights,
+        labels: optimization.tickers,
+        type: 'pie',
+        name: 'Portfolio Allocation',
+        textinfo: 'label+percent',
+        hoverinfo: 'label+percent+value',
+        hole: 0.4
+    };
+
+    const pieLayout = {
+        title: 'Optimal Portfolio Allocation',
+        showlegend: true,
+        legend: {
+            x: 0,
+            y: 1
+        },
+        height: 400
+    };
+
+    // Create a new div for the pie chart if it doesn't exist
+    let pieChartDiv = document.getElementById('allocationPieChart');
+    if (!pieChartDiv) {
+        pieChartDiv = document.createElement('div');
+        pieChartDiv.id = 'allocationPieChart';
+        pieChartDiv.className = 'plot-container';
+        document.getElementById('rebalanceStats').parentElement.insertBefore(pieChartDiv, document.getElementById('rebalanceStats'));
+    }
+
+    Plotly.newPlot('allocationPieChart', [pieTrace], pieLayout);
+
+    // Display metrics table
+    const metricsContainer = document.getElementById('rebalanceStats');
+    metricsContainer.innerHTML = `
+        <div class="table-responsive">
+            <table class="table table-sm statistics-table">
+                <tbody>
+                    <tr>
+                        <td>Expected Annual Return</td>
+                        <td>${(optimization.metrics.expected_annual_return * 100).toFixed(2)}%</td>
+                    </tr>
+                    <tr>
+                        <td>Annual Volatility</td>
+                        <td>${(optimization.metrics.annual_volatility * 100).toFixed(2)}%</td>
+                    </tr>
+                    <tr>
+                        <td>Sharpe Ratio</td>
+                        <td>${optimization.metrics.sharpe_ratio.toFixed(2)}</td>
+                    </tr>
+                    <tr>
+                        <td>Sortino Ratio</td>
+                        <td>${optimization.metrics.sortino_ratio.toFixed(2)}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    `;
+
+    // Add risk contribution display for risk parity
+    if (optimization.metrics.risk_contributions) {
+        metricsContainer.innerHTML += `
+            <div class="mt-3">
+                <h6 class="text-primary">Risk Contributions</h6>
+                <div class="table-responsive">
+                    <table class="table table-sm statistics-table">
+                        <thead>
+                            <tr>
+                                <th>Stock</th>
+                                <th>Risk Contribution</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${optimization.tickers.map((ticker, i) => `
+                                <tr>
+                                    <td>${ticker}</td>
+                                    <td>${(optimization.metrics.risk_contributions[i] * 100).toFixed(2)}%</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    }
+
+    // Display rebalancing analysis
+    displayRebalancingAnalysis(optimization.rebalance_analysis);
+}
+
+function displayRebalancingAnalysis(rebalanceData) {
+    // Plot historical performance with rebalancing
+    const performanceTrace = {
+        x: rebalanceData.dates,
+        y: rebalanceData.portfolio_values,
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Portfolio Value',
+        line: {
+            color: '#2563eb',
+            width: 2
+        }
+    };
+
+    // Add markers for rebalancing points
+    const rebalancePoints = {
+        x: rebalanceData.rebalance_dates,
+        y: rebalanceData.portfolio_values.filter((_, i) => 
+            rebalanceData.rebalance_dates.includes(rebalanceData.dates[i])),
+        type: 'scatter',
+        mode: 'markers',
+        name: 'Rebalancing Points',
+        marker: {
+            color: '#e11d48',
+            size: 8,
+            symbol: 'diamond'
+        }
+    };
+
+    const layout = {
+        title: 'Portfolio Value with Rebalancing',
+        xaxis: {
+            title: 'Date',
+            showgrid: true
+        },
+        yaxis: {
+            title: 'Portfolio Value',
+            showgrid: true
+        },
+        showlegend: true
+    };
+
+    Plotly.newPlot('rebalancePlot', [performanceTrace, rebalancePoints], layout);
+
+    // Display rebalancing statistics
+    const statsContainer = document.getElementById('rebalanceStats');
+    statsContainer.innerHTML = `
+        <div class="table-responsive">
+            <table class="table table-sm statistics-table">
+                <tbody>
+                    <tr>
+                        <td>Final Portfolio Value</td>
+                        <td>$${rebalanceData.final_value.toFixed(2)}</td>
+                    </tr>
+                    <tr>
+                        <td>Total Turnover</td>
+                        <td>${(rebalanceData.total_turnover * 100).toFixed(2)}%</td>
+                    </tr>
+                    <tr>
+                        <td>Total Transaction Costs</td>
+                        <td>${(rebalanceData.total_cost * 100).toFixed(2)}%</td>
+                    </tr>
+                    <tr>
+                        <td>Number of Rebalances</td>
+                        <td>${rebalanceData.rebalance_dates.length}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    `;
 } 
