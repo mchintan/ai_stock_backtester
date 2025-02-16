@@ -745,10 +745,12 @@ function displayRebalancingAnalysis(rebalanceData) {
 
     Plotly.newPlot('rebalancePlot', [performanceTrace, rebalancePoints], layout);
 
-    // Display rebalancing statistics
+    // Display rebalancing statistics and weight changes
     const statsContainer = document.getElementById('rebalanceStats');
-    statsContainer.innerHTML = `
-        <div class="table-responsive">
+    
+    // Summary statistics
+    let html = `
+        <div class="table-responsive mb-4">
             <table class="table table-sm statistics-table">
                 <tbody>
                     <tr>
@@ -771,4 +773,81 @@ function displayRebalancingAnalysis(rebalanceData) {
             </table>
         </div>
     `;
+
+    // Detailed rebalancing history
+    html += `
+        <h6 class="text-primary">Rebalancing History</h6>
+        <div class="accordion" id="rebalancingAccordion">
+    `;
+
+    rebalanceData.turnover_history.forEach((rebalance, index) => {
+        const accordionId = `rebalance-${index}`;
+        
+        // Calculate significant changes (more than 1% absolute change)
+        const significantChanges = rebalance.weight_changes.filter(change => 
+            Math.abs(change.absolute_change) >= 0.01
+        );
+        
+        // Summary of major changes for the accordion header
+        const summaryText = significantChanges.length > 0 
+            ? `Major changes: ${significantChanges.slice(0, 2)
+                .map(change => `${change.ticker} ${change.direction === 'up' ? '↑' : '↓'} ${Math.abs(change.percent_change).toFixed(1)}%`)
+                .join(', ')}${significantChanges.length > 2 ? '...' : ''}`
+            : 'Minor rebalancing adjustments';
+
+        html += `
+            <div class="accordion-item">
+                <h2 class="accordion-header" id="heading-${accordionId}">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
+                            data-bs-target="#collapse-${accordionId}">
+                        <strong>${rebalance.date}</strong> &nbsp;|&nbsp; 
+                        Turnover: ${(rebalance.turnover * 100).toFixed(2)}% &nbsp;|&nbsp; 
+                        ${summaryText}
+                    </button>
+                </h2>
+                <div id="collapse-${accordionId}" class="accordion-collapse collapse" 
+                     data-bs-parent="#rebalancingAccordion">
+                    <div class="accordion-body">
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Stock</th>
+                                        <th>Old Weight</th>
+                                        <th>New Weight</th>
+                                        <th>Change</th>
+                                        <th>% Change</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${rebalance.weight_changes.map(change => `
+                                        <tr class="${Math.abs(change.absolute_change) >= 0.01 ? 'table-active' : ''}">
+                                            <td>${change.ticker}</td>
+                                            <td>${(change.old_weight * 100).toFixed(2)}%</td>
+                                            <td>${(change.new_weight * 100).toFixed(2)}%</td>
+                                            <td>
+                                                <span class="text-${change.direction === 'up' ? 'success' : change.direction === 'down' ? 'danger' : 'secondary'}">
+                                                    ${change.direction === 'up' ? '↑' : change.direction === 'down' ? '↓' : '−'}
+                                                    ${Math.abs(change.absolute_change * 100).toFixed(2)}%
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <span class="text-${change.direction === 'up' ? 'success' : change.direction === 'down' ? 'danger' : 'secondary'}">
+                                                    ${change.direction === 'up' ? '+' : change.direction === 'down' ? '-' : ''}
+                                                    ${Math.abs(change.percent_change).toFixed(2)}%
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+
+    html += '</div>';
+    statsContainer.innerHTML = html;
 } 

@@ -196,3 +196,50 @@ body {
 .form-group {
     margin-bottom: 1rem;
 }
+
+/* Rebalancing History Styles */
+.accordion-button {
+    background-color: var(--card-background);
+    color: var(--text-primary);
+    padding: 1rem;
+    font-size: 0.9rem;
+}
+
+.accordion-button:not(.collapsed) {
+    background-color: #f8fafc;
+    color: var(--primary-color);
+}
+
+.accordion-button:focus {
+    box-shadow: none;
+    border-color: rgba(37, 99, 235, 0.1);
+}
+
+.accordion-item {
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    margin-bottom: 0.5rem;
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+.accordion-body {
+    background-color: #f8fafc;
+    padding: 1rem;
+}
+
+/* Weight change indicators */
+.text-success {
+    color: #059669 !important;
+}
+
+.text-danger {
+    color: #dc2626 !important;
+}
+
+.text-secondary {
+    color: #6b7280 !important;
+}
+
+.table-active {
+    background-color: rgba(37, 99, 235, 0.05) !important;
+}

@@ -328,6 +328,7 @@ def calculate_historical_rebalance(
     portfolio_values = []
     turnover_history = []
     rebalance_dates = []
+    weight_history = []  # Track weight changes
     
     # Resample dates for rebalancing
     rebalance_points = returns.resample(rebalance_frequency).last().index
@@ -348,9 +349,25 @@ def calculate_historical_rebalance(
             old_weights = current_weights.copy()
             current_weights = weights.copy()
             
-            # Calculate turnover
+            # Calculate turnover and weight changes
             turnover = np.sum(np.abs(current_weights - old_weights))
             transaction_cost_impact = turnover * transaction_cost
+            
+            # Calculate weight changes for each asset
+            weight_changes = []
+            for i, (ticker, old_w, new_w) in enumerate(zip(df.columns, old_weights, current_weights)):
+                pct_change = ((new_w - old_w) / old_w * 100) if old_w != 0 else float('inf')
+                weight_changes.append({
+                    'ticker': ticker,
+                    'old_weight': float(old_w),
+                    'new_weight': float(new_w),
+                    'absolute_change': float(new_w - old_w),
+                    'percent_change': float(pct_change),
+                    'direction': 'up' if new_w > old_w else 'down' if new_w < old_w else 'unchanged'
+                })
+            
+            # Sort weight changes by absolute magnitude
+            weight_changes.sort(key=lambda x: abs(x['absolute_change']), reverse=True)
             
             # Apply transaction costs
             portfolio_value *= (1 - transaction_cost_impact)
@@ -358,15 +375,21 @@ def calculate_historical_rebalance(
             turnover_history.append({
                 'date': date.strftime('%Y-%m-%d'),
                 'turnover': float(turnover),
-                'cost': float(transaction_cost_impact)
+                'cost': float(transaction_cost_impact),
+                'weight_changes': weight_changes
             })
             rebalance_dates.append(date.strftime('%Y-%m-%d'))
+            weight_history.append({
+                'date': date.strftime('%Y-%m-%d'),
+                'weights': [float(w) for w in current_weights]
+            })
     
     return {
         'portfolio_values': portfolio_values,
         'dates': [d.strftime('%Y-%m-%d') for d in returns.index],
         'turnover_history': turnover_history,
         'rebalance_dates': rebalance_dates,
+        'weight_history': weight_history,
         'final_value': float(portfolio_value),
         'total_turnover': float(np.sum([t['turnover'] for t in turnover_history])),
         'total_cost': float(np.sum([t['cost'] for t in turnover_history]))
