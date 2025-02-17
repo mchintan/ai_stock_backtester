@@ -313,94 +313,112 @@ def risk_parity_objective(weights: np.ndarray, cov_matrix: np.ndarray) -> float:
     target_risk = 1.0 / len(weights)  # Equal risk contribution
     return np.sum((risk_contrib - target_risk) ** 2)
 
-def calculate_historical_rebalance(
-    df: pd.DataFrame,
-    weights: np.ndarray,
-    rebalance_frequency: str = 'M',  # 'M' for monthly, 'Q' for quarterly, 'Y' for yearly
-    transaction_cost: float = 0.001  # 0.1% transaction cost
-) -> Dict:
+def calculate_historical_rebalance(df: pd.DataFrame, optimal_weights: np.ndarray) -> Dict:
     """Calculate historical performance with periodic rebalancing."""
     returns = df.pct_change().dropna()
     
-    # Initialize portfolio
+    # Initialize portfolio with $1
     portfolio_value = 1.0
-    current_weights = weights.copy()
-    portfolio_values = []
-    turnover_history = []
-    rebalance_dates = []
-    weight_history = []  # Track weight changes
+    portfolio_values = [portfolio_value]
+    current_weights = optimal_weights.copy()
     
-    # Resample dates for rebalancing
-    rebalance_points = returns.resample(rebalance_frequency).last().index
+    # Track rebalancing points and turnover
+    rebalance_dates = []
+    turnover_history = []
+    total_turnover = 0.0
+    transaction_cost = 0.001  # 0.1% transaction cost
+    
+    # Monthly rebalancing
+    rebalance_points = returns.resample('ME').last().index
     
     for date in returns.index:
-        # Apply daily returns
-        daily_return = np.sum(returns.loc[date] * current_weights)
+        # Update portfolio value
+        daily_return = np.sum(current_weights * returns.loc[date])
         portfolio_value *= (1 + daily_return)
+        portfolio_values.append(float(portfolio_value))
         
         # Update weights due to price changes
-        current_weights *= (1 + returns.loc[date])
-        current_weights /= current_weights.sum()
+        current_weights = current_weights * (1 + returns.loc[date])
+        current_weights = current_weights / np.sum(current_weights)
         
-        portfolio_values.append(portfolio_value)
-        
-        # Rebalance if needed
         if date in rebalance_points:
-            old_weights = current_weights.copy()
-            current_weights = weights.copy()
+            # Calculate turnover
+            weight_diff = np.abs(current_weights - optimal_weights)
+            turnover = np.sum(weight_diff) / 2
             
-            # Calculate turnover and weight changes
-            turnover = np.sum(np.abs(current_weights - old_weights))
-            transaction_cost_impact = turnover * transaction_cost
-            
-            # Calculate weight changes for each asset
+            # Record weight changes
             weight_changes = []
-            for i, (ticker, old_w, new_w) in enumerate(zip(df.columns, old_weights, current_weights)):
-                pct_change = ((new_w - old_w) / old_w * 100) if old_w != 0 else float('inf')
+            for i, (old_w, new_w) in enumerate(zip(current_weights, optimal_weights)):
+                abs_change = float(new_w - old_w)
+                pct_change = float(abs_change / old_w * 100) if old_w != 0 else float('inf')
+                direction = 'up' if abs_change > 0 else 'down' if abs_change < 0 else 'none'
+                
                 weight_changes.append({
-                    'ticker': ticker,
+                    'ticker': df.columns[i],
                     'old_weight': float(old_w),
                     'new_weight': float(new_w),
-                    'absolute_change': float(new_w - old_w),
-                    'percent_change': float(pct_change),
-                    'direction': 'up' if new_w > old_w else 'down' if new_w < old_w else 'unchanged'
+                    'absolute_change': abs_change,
+                    'percent_change': pct_change,
+                    'direction': direction
                 })
-            
-            # Sort weight changes by absolute magnitude
-            weight_changes.sort(key=lambda x: abs(x['absolute_change']), reverse=True)
-            
-            # Apply transaction costs
-            portfolio_value *= (1 - transaction_cost_impact)
             
             turnover_history.append({
                 'date': date.strftime('%Y-%m-%d'),
                 'turnover': float(turnover),
-                'cost': float(transaction_cost_impact),
                 'weight_changes': weight_changes
             })
+            
+            # Apply transaction costs
+            portfolio_value *= (1 - turnover * transaction_cost)
+            total_turnover += float(turnover)
+            
+            # Rebalance to optimal weights
+            current_weights = optimal_weights.copy()
             rebalance_dates.append(date.strftime('%Y-%m-%d'))
-            weight_history.append({
-                'date': date.strftime('%Y-%m-%d'),
-                'weights': [float(w) for w in current_weights]
-            })
     
     return {
-        'portfolio_values': portfolio_values,
         'dates': [d.strftime('%Y-%m-%d') for d in returns.index],
-        'turnover_history': turnover_history,
+        'portfolio_values': [float(v) for v in portfolio_values[:-1]],  # Exclude last duplicate value
         'rebalance_dates': rebalance_dates,
-        'weight_history': weight_history,
-        'final_value': float(portfolio_value),
-        'total_turnover': float(np.sum([t['turnover'] for t in turnover_history])),
-        'total_cost': float(np.sum([t['cost'] for t in turnover_history]))
+        'turnover_history': turnover_history,
+        'total_turnover': float(total_turnover),
+        'total_cost': float(total_turnover * transaction_cost),
+        'final_value': float(portfolio_values[-2])  # Use second to last value
     }
+
+def minimize_volatility(weights: np.ndarray, returns: pd.DataFrame, cov_matrix: np.ndarray) -> float:
+    """Objective function for minimizing portfolio volatility."""
+    portfolio_std = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+    return portfolio_std
+
+def maximize_sharpe(weights: np.ndarray, returns: pd.DataFrame, cov_matrix: np.ndarray, risk_free_rate: float = 0.02) -> float:
+    """Objective function for maximizing Sharpe ratio (negative for minimization)."""
+    portfolio_return = np.sum(returns.mean() * weights) * 12
+    portfolio_std = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+    return -1 * (portfolio_return - risk_free_rate) / portfolio_std if portfolio_std > 0 else 0
+
+def maximize_sortino(weights: np.ndarray, returns: pd.DataFrame, risk_free_rate: float = 0.02) -> float:
+    """Objective function for maximizing Sortino ratio (negative for minimization)."""
+    portfolio_returns = returns.dot(weights)
+    portfolio_return = portfolio_returns.mean() * 12
+    
+    # Calculate downside deviation
+    negative_returns = portfolio_returns[portfolio_returns < 0]
+    downside_std = np.sqrt(np.sum(negative_returns**2) / len(returns)) * np.sqrt(12)
+    
+    return -1 * (portfolio_return - risk_free_rate) / downside_std if downside_std > 0 else 0
+
+def maximize_return(weights: np.ndarray, returns: pd.DataFrame) -> float:
+    """Objective function for maximizing portfolio return (negative for minimization)."""
+    portfolio_return = np.sum(returns.mean() * weights) * 12
+    return -1 * portfolio_return
 
 def find_optimal_portfolio(
     df: pd.DataFrame,
     objective: OptimizationObjective,
     min_weight: float = 0.0,
     max_weight: float = 1.0,
-    n_portfolios: int = 10000
+    risk_free_rate: float = 0.02
 ) -> Dict:
     """Find optimal portfolio weights using various optimization methods."""
     returns = df.pct_change().dropna()
@@ -408,62 +426,60 @@ def find_optimal_portfolio(
     cov_matrix = returns.cov() * 12
     annual_returns = returns.mean() * 12
     
+    # Define constraints
+    constraints = [
+        {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}  # weights sum to 1
+    ]
+    bounds = tuple((min_weight, max_weight) for _ in range(n_assets))
+    
+    # Initial guess: equal weights
+    initial_weights = np.array([1/n_assets] * n_assets)
+    
     if objective == OptimizationObjective.RISK_PARITY:
-        # Risk Parity Optimization (existing code)
-        constraints = (
-            {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},  # Weights sum to 1
-        )
-        bounds = tuple((min_weight, max_weight) for _ in range(n_assets))
-        
         result = minimize(
             risk_parity_objective,
-            np.array([1/n_assets] * n_assets),
+            initial_weights,
             args=(cov_matrix,),
             method='SLSQP',
             bounds=bounds,
-            constraints=constraints
+            constraints=constraints,
+            options={'maxiter': 1000}
         )
-        
-        optimal_weights = result.x
     else:
-        # Generate random portfolios for other optimization objectives
-        weights = np.random.uniform(min_weight, max_weight, (n_portfolios, n_assets))
-        weights = weights / weights.sum(axis=1)[:, np.newaxis]  # Normalize weights
+        # Choose objective function based on optimization goal
+        objective_functions = {
+            OptimizationObjective.MIN_VOLATILITY: (minimize_volatility, (returns, cov_matrix)),
+            OptimizationObjective.SHARPE_RATIO: (maximize_sharpe, (returns, cov_matrix, risk_free_rate)),
+            OptimizationObjective.MAX_SORTINO: (maximize_sortino, (returns, risk_free_rate)),
+            OptimizationObjective.MAX_RETURN: (maximize_return, (returns,))
+        }
         
-        # Calculate portfolio metrics for each random portfolio
-        portfolio_metrics = []
-        for w in weights:
-            metrics = calculate_portfolio_metrics(w, returns)
-            portfolio_metrics.append({
-                'weights': w,
-                'return': metrics['return'],
-                'risk': metrics['risk'],
-                'sharpe_ratio': metrics['sharpe_ratio'],
-                'sortino_ratio': metrics['sortino_ratio']
-            })
+        obj_function, args = objective_functions[objective]
         
-        # Find optimal portfolio based on objective
-        if objective == OptimizationObjective.SHARPE_RATIO:
-            optimal_idx = max(range(len(portfolio_metrics)), 
-                            key=lambda i: portfolio_metrics[i]['sharpe_ratio'])
-        elif objective == OptimizationObjective.MIN_VOLATILITY:
-            optimal_idx = min(range(len(portfolio_metrics)), 
-                            key=lambda i: portfolio_metrics[i]['risk'])
-        elif objective == OptimizationObjective.MAX_RETURN:
-            optimal_idx = max(range(len(portfolio_metrics)), 
-                            key=lambda i: portfolio_metrics[i]['return'])
-        elif objective == OptimizationObjective.MAX_SORTINO:
-            optimal_idx = max(range(len(portfolio_metrics)), 
-                            key=lambda i: portfolio_metrics[i]['sortino_ratio'])
-        
-        optimal_weights = portfolio_metrics[optimal_idx]['weights']
+        result = minimize(
+            obj_function,
+            initial_weights,
+            args=args,
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints,
+            options={'maxiter': 1000}
+        )
     
-    # Calculate final metrics for optimal portfolio
+    if not result.success:
+        raise ValueError(f"Optimization failed: {result.message}")
+    
+    optimal_weights = result.x
+    
+    # Calculate metrics for the optimal portfolio
     metrics = calculate_portfolio_metrics(optimal_weights, returns)
-    
-    # Calculate risk contributions if needed
     risk_contrib = calculate_risk_contribution(optimal_weights, cov_matrix)
     
+    # Calculate efficient frontier points for visualization
+    n_points = 100
+    efficient_frontier = calculate_efficient_frontier(returns, cov_matrix, n_points, min_weight, max_weight)
+    
+    # Convert NumPy types to Python native types
     return {
         'optimal_weights': [float(w) for w in optimal_weights],
         'tickers': list(df.columns),
@@ -474,70 +490,226 @@ def find_optimal_portfolio(
             'sortino_ratio': float(metrics['sortino_ratio']),
             'risk_contributions': [float(r) for r in risk_contrib]
         },
+        'efficient_frontier': efficient_frontier,
+        'optimization_details': {
+            'objective': objective.value,
+            'min_weight': float(min_weight),
+            'max_weight': float(max_weight),
+            'risk_free_rate': float(risk_free_rate),
+            'convergence': bool(result.success),
+            'message': str(result.message)
+        },
         'rebalance_analysis': calculate_historical_rebalance(df, optimal_weights)
     }
+
+def portfolio_volatility(weights: np.ndarray, cov_matrix: np.ndarray) -> float:
+    """Calculate portfolio volatility (standard deviation)."""
+    # Input validation
+    if len(weights) == 0 or len(cov_matrix) == 0:
+        raise ValueError("Empty weights or covariance matrix")
+    if len(weights) != len(cov_matrix):
+        raise ValueError("Dimension mismatch between weights and covariance matrix")
+    
+    try:
+        return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+    except Exception as e:
+        raise ValueError(f"Error calculating portfolio volatility: {str(e)}")
+
+def portfolio_return(weights: np.ndarray, returns: pd.DataFrame) -> float:
+    """Calculate portfolio expected return."""
+    # Input validation
+    if len(weights) == 0 or returns.empty:
+        raise ValueError("Empty weights or returns")
+    if len(weights) != len(returns.columns):
+        raise ValueError("Dimension mismatch between weights and returns")
+    
+    try:
+        return np.sum(returns.mean() * weights) * 12
+    except Exception as e:
+        raise ValueError(f"Error calculating portfolio return: {str(e)}")
+
+def portfolio_sharpe_ratio(weights: np.ndarray, returns: pd.DataFrame, risk_free_rate: float = 0.02) -> float:
+    """Calculate portfolio Sharpe ratio."""
+    # Input validation
+    if len(weights) == 0 or returns.empty:
+        raise ValueError("Empty weights or returns")
+    if not (0 <= risk_free_rate <= 1):
+        raise ValueError("Risk-free rate must be between 0 and 1")
+    
+    try:
+        ret = portfolio_return(weights, returns)
+        vol = portfolio_volatility(weights, returns.cov() * 12)
+        return (ret - risk_free_rate) / vol if vol > 0 else 0
+    except Exception as e:
+        raise ValueError(f"Error calculating Sharpe ratio: {str(e)}")
+
+def calculate_efficient_frontier(returns: pd.DataFrame, cov_matrix: pd.DataFrame, n_points: int, min_weight: float, max_weight: float) -> List[Dict]:
+    """Calculate points along the efficient frontier."""
+    frontier_points = []
+    
+    # Get min and max returns from individual assets
+    min_ret = returns.mean().min() * 12
+    max_ret = returns.mean().max() * 12
+    
+    target_returns = np.linspace(min_ret, max_ret, n_points)
+    
+    for target_return in target_returns:
+        constraints = [
+            {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},  # weights sum to 1
+            {'type': 'eq', 'fun': lambda x: portfolio_return(x, returns) - target_return}  # target return constraint
+        ]
+        
+        bounds = tuple((min_weight, max_weight) for _ in range(len(returns.columns)))
+        
+        result = minimize(
+            portfolio_volatility,
+            x0=np.array([1/len(returns.columns)] * len(returns.columns)),
+            args=(cov_matrix,),
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints
+        )
+        
+        if result.success:
+            weights = result.x
+            risk = portfolio_volatility(weights, cov_matrix)
+            sharpe = portfolio_sharpe_ratio(weights, returns, 0.02)  # Using 2% risk-free rate
+            
+            frontier_points.append({
+                'risk': float(risk),
+                'return': float(target_return),
+                'sharpe': float(sharpe)
+            })
+    
+    return frontier_points
 
 @app.post("/api/analyze")
 async def analyze_stocks(request: StockRequest):
     """Main endpoint for stock analysis and simulation."""
     results = {}
     
+    # Validate request
+    if not request.portfolio_groups:
+        raise HTTPException(status_code=400, detail="At least one portfolio group is required")
+    
     for portfolio in request.portfolio_groups:
+        # Validate portfolio
+        if not portfolio.tickers:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Portfolio '{portfolio.name}' must contain at least one ticker"
+            )
+        
+        if len(portfolio.tickers) < 2:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Portfolio '{portfolio.name}' must contain at least 2 stocks for diversification"
+            )
+        
+        # Validate simulation parameters
+        if request.num_simulations < 100:
+            raise HTTPException(
+                status_code=400,
+                detail="Number of simulations must be at least 100"
+            )
+        
+        if request.time_horizon < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Time horizon must be at least 1 month"
+            )
+        
         # Fetch historical data
-        data = await fetch_historical_data(portfolio.tickers, request.start_year)
-        df = data['prices']
-        dividend_data = data['dividends']
-        
-        # Calculate statistics
-        stats = calculate_statistics(df)
-        
-        # Run Monte Carlo simulation
-        simulation_results = run_monte_carlo(df, request.num_simulations, request.time_horizon)
-        
-        # Analyze convergence
-        convergence_results = analyze_convergence(df, request.num_simulations, request.time_horizon)
-        
-        # Find optimal portfolio
-        optimization_results = find_optimal_portfolio(
-            df,
-            request.optimization_objective,
-            request.min_weight,
-            request.max_weight
+        try:
+            data = await fetch_historical_data(portfolio.tickers, request.start_year)
+            df = data['prices']
+            dividend_data = data['dividends']
+            
+            # Check if we have enough data
+            if df.empty:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No price data available for portfolio '{portfolio.name}'"
+                )
+            
+            if len(df) < 12:  # At least 12 months of data
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Insufficient historical data for portfolio '{portfolio.name}'. Need at least 12 months."
+                )
+            
+            # Calculate statistics
+            stats = calculate_statistics(df)
+            
+            # Run Monte Carlo simulation
+            simulation_results = run_monte_carlo(df, request.num_simulations, request.time_horizon)
+            
+            # Analyze convergence
+            convergence_results = analyze_convergence(df, request.num_simulations, request.time_horizon)
+            
+            try:
+                # Find optimal portfolio
+                optimization_results = find_optimal_portfolio(
+                    df,
+                    request.optimization_objective,
+                    request.min_weight,
+                    request.max_weight
+                )
+            except ValueError as e:
+                # If optimization fails, return error in results rather than failing completely
+                optimization_results = {
+                    "error": str(e),
+                    "status": "failed",
+                    "optimal_weights": [1.0/len(df.columns)] * len(df.columns)  # Default to equal weights
+                }
+            
+            # Project future dividend income with safety checks
+            initial_portfolio_value = 1.0
+            projected_value = simulation_results['percentiles']['50th'][-1]
+            projected_annual_income = dividend_data['portfolio_yield'] * projected_value
+            projected_income_growth = (1 + max(min(dividend_data['weighted_growth'], 0.5), -0.5)) ** request.time_horizon
+            final_projected_income = projected_annual_income * projected_income_growth
+            
+            dividend_projections = {
+                'current_yield': dividend_data['portfolio_yield'],
+                'weighted_growth_rate': dividend_data['weighted_growth'],
+                'current_annual_income': dividend_data['annual_income'],
+                'projected_annual_income': float(final_projected_income),
+                'individual_metrics': dividend_data['individual_dividends']
+            }
+            
+            # Add metadata
+            metadata = {
+                "data_start": df.index[0].strftime("%Y-%m-%d"),
+                "data_end": df.index[-1].strftime("%Y-%m-%d"),
+                "frequency": "monthly",
+                "number_of_months": len(df),
+                "tickers_analyzed": list(df.columns),
+                "portfolio_description": f"Optimized portfolio of {len(df.columns)} stocks"
+            }
+            
+            results[portfolio.name] = {
+                "metadata": metadata,
+                "statistics": stats,
+                "simulation_results": simulation_results,
+                "convergence_analysis": convergence_results,
+                "dividend_analysis": dividend_projections,
+                "optimization_results": optimization_results
+            }
+            
+        except Exception as e:
+            # Log the error and return a more user-friendly message
+            print(f"Error processing portfolio '{portfolio.name}': {str(e)}")
+            results[portfolio.name] = {
+                "error": f"Failed to process portfolio: {str(e)}",
+                "status": "failed"
+            }
+    
+    if not results:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to process any portfolios"
         )
-        
-        # Project future dividend income
-        initial_portfolio_value = 1.0
-        projected_value = simulation_results['percentiles']['50th'][-1]
-        projected_annual_income = dividend_data['portfolio_yield'] * projected_value
-        projected_income_growth = (1 + dividend_data['weighted_growth']) ** request.time_horizon
-        final_projected_income = projected_annual_income * projected_income_growth
-        
-        dividend_projections = {
-            'current_yield': dividend_data['portfolio_yield'],
-            'weighted_growth_rate': dividend_data['weighted_growth'],
-            'current_annual_income': dividend_data['annual_income'],
-            'projected_annual_income': float(final_projected_income),
-            'individual_metrics': dividend_data['individual_dividends']
-        }
-        
-        # Add metadata
-        metadata = {
-            "data_start": df.index[0].strftime("%Y-%m-%d"),
-            "data_end": df.index[-1].strftime("%Y-%m-%d"),
-            "frequency": "monthly",
-            "number_of_months": len(df),
-            "tickers_analyzed": list(df.columns),
-            "portfolio_description": f"Optimized portfolio of {len(df.columns)} stocks"
-        }
-        
-        results[portfolio.name] = {
-            "metadata": metadata,
-            "statistics": stats,
-            "simulation_results": simulation_results,
-            "convergence_analysis": convergence_results,
-            "dividend_analysis": dividend_projections,
-            "optimization_results": optimization_results
-        }
     
     return results
 
