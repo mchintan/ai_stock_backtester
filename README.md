@@ -34,28 +34,7 @@ http://localhost:8000
 
 ## Deployment Instructions
 
-### Deploy to Render.com (Recommended)
-
-1. Fork this repository to your GitHub account
-
-2. Create a new Web Service on Render.com:
-   - Go to https://dashboard.render.com
-   - Click "New +" and select "Web Service"
-   - Connect your GitHub repository
-   - Select the repository you just forked
-
-3. Configure the Web Service:
-   - Name: stock-portfolio-simulator (or your preferred name)
-   - Environment: Python
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-   - Select the free plan
-
-4. Click "Create Web Service"
-
-The application will be automatically deployed and available at your Render.com URL.
-
-## Deploy to Google Cloud Run
+### Deploy to Google Cloud Run
 
 1. Install the Google Cloud SDK:
    - Visit https://cloud.google.com/sdk/docs/install
